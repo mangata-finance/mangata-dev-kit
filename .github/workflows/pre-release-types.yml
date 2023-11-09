@@ -137,11 +137,15 @@ jobs:
       - name: Publish to NPM
         if: ${{ github.event.inputs.branch != '' }}
         working-directory: dist/packages/types
-        run: |
-          echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > .npmrc
-          npm publish --tag ${{ github.event.inputs.branch }} --access public
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          INPUTS_BRANCH: ${{ github.event.inputs.branch }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > .npmrc
+          
+          # Branch name sanitization added to avoid issues with npm version command
+          # Example `ci/new-branch` -> `ci-new-branch`
+          npm publish --tag "${INPUTS_BRANCH//\//-}" --access public
 
       - name: Publish rc to NPM
         if: ${{ github.event.inputs.branch == '' }}
