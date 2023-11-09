@@ -1,6 +1,6 @@
 {
   "name": "@mangata-finance/types",
-  "version": "2.0.1-ci-update-dev-env-helm-chart-to-fix-port-parameter-issue-MGX-808.0",
+  "version": "2.0.1-ci-update-dev-env-helm-chart-to-fix-port-parameter-issue-MGX-808.1",
   "description": "Polkadot.js type definitions for Mangata Network",
   "author": "Mangata Finance <solutions@mangata.finance>",
   "repository": {
