@@ -114,8 +114,12 @@ jobs:
       - name: NPM version bump
         if: ${{ github.event.inputs.branch != '' }}
         working-directory: packages/types
+        env:
+          INPUTS_BRANCH: ${{ github.event.inputs.branch }}
         run: |
-          npm version prerelease --preid=${{ github.event.inputs.branch }}
+          # Branch name sanitization added to avoid issues with npm version command
+          # Example `ci/new-branch` -> `ci-new-branch`
+          npm version prerelease --preid="${INPUTS_BRANCH//\//-}"
 
       - name: git add and commit new version
         if: ${{ github.event.inputs.branch != '' }}
