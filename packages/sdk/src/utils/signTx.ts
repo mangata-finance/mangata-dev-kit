@@ -1,343 +1,252 @@
-import { SubmittableExtrinsic } from "@polkadot/api/types";
-import { ISubmittableResult } from "@polkadot/types/types";
-import { AnyTuple } from "@polkadot/types-codec/types";
-import { GenericExtrinsic } from "@polkadot/types";
-import { ApiPromise } from "@polkadot/api";
-import { BN } from "@polkadot/util";
+import { SubmittableExtrinsic } from '@polkadot/api/types';
+import { ISubmittableResult } from '@polkadot/types/types';
+import { AnyTuple } from '@polkadot/types-codec/types';
+import { GenericExtrinsic } from '@polkadot/types';
+import { ApiPromise } from '@polkadot/api';
+import { BN } from '@polkadot/util';
 
 import {
   Account,
   MangataEventData,
   MangataGenericEvent,
-  TxOptions
-} from "../types/common";
-import { serializeTx } from "./serialize";
-import { getTxNonce } from "./getTxNonce";
-import { dbInstance } from "./inMemoryDatabase";
-import { truncatedString } from "./truncatedString";
-import { getTxError } from "./getTxError";
-import { logger } from "./mangataLogger";
+  TxOptions,
+} from '../types/common';
+import { getTxNonce } from './getTxNonce';
+import { dbInstance } from './inMemoryDatabase';
+import { truncatedString } from './truncatedString';
+import { getTxError } from './getTxError';
+import { logger } from './mangataLogger';
+import { ExtrinsicStatus } from '@polkadot/types/interfaces';
+import { hexToU8a } from '@polkadot/util';
+import { signTypedData_v4 } from './metamaskSigning';
 
-
-export const executeTx = async (
+const subscribeToExtrinsic = async (
   api: ApiPromise,
   tx: GenericExtrinsic<AnyTuple>,
-): Promise<MangataGenericEvent[]> => {
-  /* eslint-disable no-async-promise-executor */
-  return new Promise<MangataGenericEvent[]>(async (resolve, reject) => {
+  status: ExtrinsicStatus,
+  extractedAccount: string,
+  txOptions: Partial<TxOptions> | undefined,
+  subscribed: boolean,
+  result: ISubmittableResult | null,
+  resolve: (
+    value: MangataGenericEvent[] | PromiseLike<MangataGenericEvent[]>
+  ) => void,
+  reject: (reason?: any) => void,
+  unsub: () => void
+) => {
+  logger.debug(
+    `Tx[${tx.hash.toString()}]who: ${extractedAccount} nonce: ${tx.nonce.toString()} => ${
+      status.type
+    }(${status.value.toString()})`
+  );
 
-    let subscribed = false;
-    if (tx.signature.toHex() == "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000") {
-      reject("Transaction not signed");
+  if (result) {
+    txOptions?.statusCallback?.(result);
+  }
+
+  if ((status.isInBlock || status.isFinalized) && !subscribed) {
+    subscribed = true;
+    let inclusionBlockHash;
+    if (status.isInBlock) {
+      inclusionBlockHash = status.asInBlock.toString();
+    } else if (status.isFinalized) {
+      inclusionBlockHash = status.asFinalized.toString();
     }
-    let extractedAccount = tx.signer.toString();
-    let nonce = tx.nonce;
-
-    logger.debug(
-      `submitting Tx[${tx.hash.toString()}]who: ${extractedAccount} nonce: ${nonce.toString()} `
+    const inclusionBlockHeader = await api.rpc.chain.getHeader(
+      inclusionBlockHash
     );
+    const inclusionBlockNr = inclusionBlockHeader.number.toBn();
+    const executionBlockStartNr = inclusionBlockNr.addn(0);
+    const executionBlockStopNr = inclusionBlockNr.addn(10);
+    const executionBlockNr = executionBlockStartNr;
 
-    try {
-      const unsub = await api.rpc.author.submitAndWatchExtrinsic(tx, async (status) => {
+    const unsubscribeNewHeads = await api.rpc.chain.subscribeNewHeads(
+      async (lastHeader) => {
+        const lastBlockNumber = lastHeader.number.toBn();
 
-        logger.trace(
-          `Tx[${tx.hash.toString()}]who: ${extractedAccount} nonce: ${nonce.toString()} => ${status.type}(${status.value.toString()})`
-        );
-
-        // TODO: whats that for ??
-        // txOptions?.statusCallback?.(result);
-        if (
-          (status.isInBlock || status.isFinalized) &&
-          !subscribed
-        ) {
-          subscribed = true;
-          let inclusionBlockHash;
-          if (status.isInBlock) {
-            inclusionBlockHash = status.asInBlock.toString();
-          } else if (status.isFinalized) {
-            inclusionBlockHash = status.asFinalized.toString();
-          }
-          const inclusionBlockHeader = await api.rpc.chain.getHeader(
-            inclusionBlockHash
+        if (executionBlockNr.gt(executionBlockStopNr)) {
+          unsubscribeNewHeads();
+          reject(
+            `Tx([${tx.hash.toString()}])
+                  was not executed in blocks : ${executionBlockStartNr.toString()}..${executionBlockStopNr.toString()}`
           );
-          const inclusionBlockNr = inclusionBlockHeader.number.toBn();
-          const executionBlockStartNr = inclusionBlockNr.addn(0);
-          const executionBlockStopNr = inclusionBlockNr.addn(10);
-          const executionBlockNr = executionBlockStartNr;
-
-          const unsubscribeNewHeads = await api.rpc.chain.subscribeNewHeads(
-            async (lastHeader) => {
-              const lastBlockNumber = lastHeader.number.toBn();
-
-              if (executionBlockNr.gt(executionBlockStopNr)) {
-                unsubscribeNewHeads();
-                reject(
-                  `Tx([${tx.hash.toString()}])
-                        was not executed in blocks : ${executionBlockStartNr.toString()}..${executionBlockStopNr.toString()}`
-                );
-                const nonce = await api.rpc.system.accountNextIndex(
-                  extractedAccount
-                );
-
-                const currentNonce: BN = nonce.toBn();
-                dbInstance.setNonce(extractedAccount, currentNonce);
-                unsub();
-                return;
-              }
-
-              if (lastBlockNumber.gte(executionBlockNr)) {
-                const blockHash = await api.rpc.chain.getBlockHash(
-                  executionBlockNr
-                );
-                const blockHeader = await api.rpc.chain.getHeader(blockHash);
-                const extinsics: GenericExtrinsic<AnyTuple>[] = (
-                  await api.rpc.chain.getBlock(blockHeader.hash)
-                ).block.extrinsics;
-                const apiAt = await api.at(blockHeader.hash);
-                const events = await apiAt.query.system.events();
-
-                executionBlockNr.iaddn(1);
-
-                const index = extinsics.findIndex((extrinsic) => {
-                  return extrinsic.hash.toString() === tx.hash.toString();
-                });
-
-                if (index < 0) {
-                  logger.trace(
-                    `Tx([${tx.hash.toString()}]) not found in block ${executionBlockNr} $([${truncatedString(
-                      blockHash.toString()
-                    )}])`
-                  );
-                  return;
-                } else {
-                  unsubscribeNewHeads();
-                  logger.trace(
-                    `Tx[${tx.hash.toString()}]who:${extractedAccount} nonce:${nonce.toString()} => Executed(${blockHash.toString()})`
-                  );
-                }
-
-                const eventsTriggeredByTx: MangataGenericEvent[] = events
-                  .filter((currentBlockEvent) => {
-                    return (
-                      currentBlockEvent.phase.isApplyExtrinsic &&
-                      currentBlockEvent.phase.asApplyExtrinsic.toPrimitive() ===
-                      index
-                    );
-                  })
-                  .map((eventRecord) => {
-                    const { event, phase } = eventRecord;
-                    const types = event.typeDef;
-                    const eventData: MangataEventData[] = event.data.map(
-                      (d: any, i: any) => {
-                        return {
-                          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                          lookupName: types[i].lookupName!,
-                          data: d
-                        };
-                      }
-                    );
-
-                    return {
-                      event,
-                      phase,
-                      section: event.section,
-                      method: event.method,
-                      metaDocumentation: event.meta.docs.toString(),
-                      eventData,
-                      error: getTxError(api, event.method, eventData)
-                    } as MangataGenericEvent;
-                  });
-
-                // txOptions?.extrinsicStatus?.(eventsTriggeredByTx);
-                resolve(eventsTriggeredByTx);
-                unsub();
-              }
-            }
-          );
-        } /*else if (result.isError) {
-          logger.trace(
-            "Transaction Error Result",
-            JSON.stringify(result, null, 2)
-          );
-          reject(`Tx([${tx.hash.toString()}]) Transaction error`);
           const nonce = await api.rpc.system.accountNextIndex(extractedAccount);
+
           const currentNonce: BN = nonce.toBn();
           dbInstance.setNonce(extractedAccount, currentNonce);
-        }*/
-      });
-    } catch (error: any) {
-      const nonce = await api.rpc.system.accountNextIndex(extractedAccount);
-      const currentNonce: BN = nonce.toBn();
-      dbInstance.setNonce(extractedAccount, currentNonce);
-      reject({
-        data:
-          error.message ||
-          error.description ||
-          error.data?.toString() ||
-          error.toString()
-      });
-    }
-  });
-}
+          unsub();
+          return;
+        }
+
+        if (lastBlockNumber.gte(executionBlockNr)) {
+          const blockHash = await api.rpc.chain.getBlockHash(executionBlockNr);
+          const blockHeader = await api.rpc.chain.getHeader(blockHash);
+          const extinsics: GenericExtrinsic<AnyTuple>[] = (
+            await api.rpc.chain.getBlock(blockHeader.hash)
+          ).block.extrinsics;
+          const apiAt = await api.at(blockHeader.hash);
+          const events = await apiAt.query.system.events();
+
+          executionBlockNr.iaddn(1);
+
+          const index = extinsics.findIndex((extrinsic) => {
+            return extrinsic.hash.toString() === tx.hash.toString();
+          });
+
+          if (index < 0) {
+            logger.debug(
+              `Tx([${tx.hash.toString()}]) not found in block ${executionBlockNr} $([${truncatedString(
+                blockHash.toString()
+              )}])`
+            );
+            return;
+          } else {
+            unsubscribeNewHeads();
+            logger.debug(
+              `Tx[${tx.hash.toString()}]who:${extractedAccount} nonce:${tx.nonce.toString()} => Executed(${blockHash.toString()})`
+            );
+          }
+
+          const eventsTriggeredByTx: MangataGenericEvent[] = events
+            .filter((currentBlockEvent) => {
+              return (
+                currentBlockEvent.phase.isApplyExtrinsic &&
+                currentBlockEvent.phase.asApplyExtrinsic.toPrimitive() === index
+              );
+            })
+            .map((eventRecord) => {
+              const { event, phase } = eventRecord;
+              const types = event.typeDef;
+              const eventData: MangataEventData[] = event.data.map(
+                (d: any, i: any) => {
+                  return {
+                    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                    lookupName: types[i].lookupName!,
+                    data: d,
+                  };
+                }
+              );
+
+              return {
+                event,
+                phase,
+                section: event.section,
+                method: event.method,
+                metaDocumentation: event.meta.docs.toString(),
+                eventData,
+                error: getTxError(api, event.method, eventData),
+              } as MangataGenericEvent;
+            });
+
+          txOptions?.extrinsicStatus?.(eventsTriggeredByTx);
+          resolve(eventsTriggeredByTx);
+          unsub();
+        }
+      }
+    );
+  } else if (result?.isError) {
+    reject(`Tx([${tx.hash.toString()}]) Transaction error`);
+    const nonce = await api.rpc.system.accountNextIndex(extractedAccount);
+    const currentNonce: BN = nonce.toBn();
+    dbInstance.setNonce(extractedAccount, currentNonce);
+  }
+};
 
 export const signTx = async (
   api: ApiPromise,
-  tx: SubmittableExtrinsic<"promise">,
+  tx: SubmittableExtrinsic<'promise'>,
   account: Account,
   txOptions?: Partial<TxOptions>
 ): Promise<MangataGenericEvent[]> => {
   /* eslint-disable no-async-promise-executor */
   return new Promise<MangataGenericEvent[]>(async (resolve, reject) => {
     const extractedAccount =
-      typeof account === "string" ? account : account.address;
+      typeof account === 'string' ? account : account.address;
 
     let subscribed = false;
     const nonce = await getTxNonce(api, extractedAccount, txOptions);
-    try {
-      await tx.signAsync(account, { nonce, signer: txOptions?.signer });
-    } catch (error: any) {
-      reject(error);
-    }
-    logger.trace(
+
+    logger.debug(
       `submitting Tx[${tx.hash.toString()}]who: ${extractedAccount} nonce: ${nonce.toString()} `
     );
+
     try {
-      const unsub = await tx.send(async (result: ISubmittableResult) => {
-        logger.trace(
-          `Tx[${tx.hash.toString()}]who: ${extractedAccount} nonce: ${nonce.toString()} => ${result.status.type
-          }(${result.status.value.toString()})${serializeTx(api, tx)}`
+      if (txOptions?.signer) {
+        await tx.signAsync(account, { nonce, signer: txOptions?.signer });
+
+        const unsub = await tx.send(async (result: ISubmittableResult) => {
+          subscribeToExtrinsic(
+            api,
+            tx,
+            result.status,
+            extractedAccount,
+            txOptions,
+            subscribed,
+            result,
+            resolve,
+            reject,
+            unsub
+          );
+        });
+      } else if (txOptions?.metamaskProvider) {
+        if (!txOptions?.ethAccount) {
+          reject('Ethereum address not provided');
+          return;
+        }
+
+        const metamaskTx = api.createType(
+          'Extrinsic',
+          { method: tx.method },
+          { version: tx.version }
+        );
+        const signRes = await signTypedData_v4(
+          api,
+          tx,
+          txOptions?.ethAccount,
+          txOptions?.metamaskProvider
         );
 
-        txOptions?.statusCallback?.(result);
-        if (
-          (result.status.isInBlock || result.status.isFinalized) &&
-          !subscribed
-        ) {
-          subscribed = true;
-          let inclusionBlockHash;
-          if (result.status.isInBlock) {
-            inclusionBlockHash = result.status.asInBlock.toString();
-          } else if (result.status.isFinalized) {
-            inclusionBlockHash = result.status.asFinalized.toString();
-          }
-          const inclusionBlockHeader = await api.rpc.chain.getHeader(
-            inclusionBlockHash
-          );
-          const inclusionBlockNr = inclusionBlockHeader.number.toBn();
-          const executionBlockStartNr = inclusionBlockNr.addn(0);
-          const executionBlockStopNr = inclusionBlockNr.addn(10);
-          const executionBlockNr = executionBlockStartNr;
-
-          const unsubscribeNewHeads = await api.rpc.chain.subscribeNewHeads(
-            async (lastHeader) => {
-              const lastBlockNumber = lastHeader.number.toBn();
-
-              if (executionBlockNr.gt(executionBlockStopNr)) {
-                unsubscribeNewHeads();
-                reject(
-                  `Tx([${tx.hash.toString()}])
-                        was not executed in blocks : ${executionBlockStartNr.toString()}..${executionBlockStopNr.toString()}`
-                );
-                const nonce = await api.rpc.system.accountNextIndex(
-                  extractedAccount
-                );
-
-                const currentNonce: BN = nonce.toBn();
-                dbInstance.setNonce(extractedAccount, currentNonce);
-                unsub();
-                return;
-              }
-
-              if (lastBlockNumber.gte(executionBlockNr)) {
-                const blockHash = await api.rpc.chain.getBlockHash(
-                  executionBlockNr
-                );
-                const blockHeader = await api.rpc.chain.getHeader(blockHash);
-                const extinsics: GenericExtrinsic<AnyTuple>[] = (
-                  await api.rpc.chain.getBlock(blockHeader.hash)
-                ).block.extrinsics;
-                const apiAt = await api.at(blockHeader.hash);
-                const events = await apiAt.query.system.events();
-
-                executionBlockNr.iaddn(1);
-
-                const index = extinsics.findIndex((extrinsic) => {
-                  return extrinsic.hash.toString() === tx.hash.toString();
-                });
-
-                if (index < 0) {
-                  logger.trace(
-                    `Tx([${tx.hash.toString()}]) not found in block ${executionBlockNr} $([${truncatedString(
-                      blockHash.toString()
-                    )}])`
-                  );
-                  return;
-                } else {
-                  unsubscribeNewHeads();
-                  logger.trace(
-                    `Tx[${tx.hash.toString()}]who:${extractedAccount} nonce:${nonce.toString()} => Executed(${blockHash.toString()})`
-                  );
-                }
-
-                const eventsTriggeredByTx: MangataGenericEvent[] = events
-                  .filter((currentBlockEvent) => {
-                    return (
-                      currentBlockEvent.phase.isApplyExtrinsic &&
-                      currentBlockEvent.phase.asApplyExtrinsic.toPrimitive() ===
-                      index
-                    );
-                  })
-                  .map((eventRecord) => {
-                    const { event, phase } = eventRecord;
-                    const types = event.typeDef;
-                    const eventData: MangataEventData[] = event.data.map(
-                      (d: any, i: any) => {
-                        return {
-                          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                          lookupName: types[i].lookupName!,
-                          data: d
-                        };
-                      }
-                    );
-
-                    return {
-                      event,
-                      phase,
-                      section: event.section,
-                      method: event.method,
-                      metaDocumentation: event.meta.docs.toString(),
-                      eventData,
-                      error: getTxError(api, event.method, eventData)
-                    } as MangataGenericEvent;
-                  });
-
-                txOptions?.extrinsicStatus?.(eventsTriggeredByTx);
-                resolve(eventsTriggeredByTx);
-                unsub();
-              }
-            }
-          );
-        } else if (result.isError) {
-          logger.trace(
-            "Transaction Error Result",
-            JSON.stringify(result, null, 2)
-          );
-          reject(`Tx([${tx.hash.toString()}]) Transaction error`);
-          const nonce = await api.rpc.system.accountNextIndex(extractedAccount);
-          const currentNonce: BN = nonce.toBn();
-          dbInstance.setNonce(extractedAccount, currentNonce);
+        if (!signRes) {
+          reject('Metamask sign error');
+          return;
         }
-      });
+
+        const [addr, payload, signature] = signRes;
+        const created_signature = api.createType('MultiSignature', {
+          Eth: hexToU8a(signature),
+        });
+
+        metamaskTx.addSignature(addr, created_signature as any, payload as any);
+
+        const unsub = await api.rpc.author.submitAndWatchExtrinsic(
+          metamaskTx,
+          async (status) => {
+            subscribeToExtrinsic(
+              api,
+              metamaskTx,
+              status,
+              extractedAccount,
+              txOptions,
+              subscribed,
+              null,
+              resolve,
+              reject,
+              unsub
+            );
+          }
+        );
+      }
     } catch (error: any) {
       const nonce = await api.rpc.system.accountNextIndex(extractedAccount);
       const currentNonce: BN = nonce.toBn();
       dbInstance.setNonce(extractedAccount, currentNonce);
+
       reject({
         data:
           error.message ||
           error.description ||
           error.data?.toString() ||
-          error.toString()
+          error.toString(),
       });
     }
   });

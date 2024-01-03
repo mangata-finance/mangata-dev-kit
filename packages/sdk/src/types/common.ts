@@ -6,6 +6,7 @@ import type { ISubmittableResult, Codec } from "@polkadot/types/types";
 import type { Event, Phase } from "@polkadot/types/interfaces";
 import { SubmittableExtrinsic } from "@polkadot/api/types";
 import { ILogObj, ISettingsParam } from "tslog";
+import type { SDKProvider } from '@metamask/sdk';
 
 import {
   MainTokens,
@@ -98,6 +99,8 @@ export type MangataGenericEvent = {
 export type TxOptions = {
   nonce: BN;
   signer: Signer;
+  ethAccount?: string;
+  metamaskProvider?: SDKProvider;
   statusCallback: (result: ISubmittableResult) => void;
   extrinsicStatus: (events: MangataGenericEvent[]) => void;
 };

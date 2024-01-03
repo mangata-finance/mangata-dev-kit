@@ -1,4 +1,4 @@
-export { signTx, executeTx } from "./utils/signTx";
+export { signTx } from "./utils/signTx";
 
 export { Mangata } from "./mangata";
 
