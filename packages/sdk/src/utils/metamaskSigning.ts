@@ -2,7 +2,7 @@ import { ApiPromise } from '@polkadot/api';
 import { Registry } from '@polkadot/types-codec/types';
 import { u8aToHex, hexToU8a } from '@polkadot/util';
 import { isNumber, objectSpread } from '@polkadot/util';
-import { blake2AsU8a } from '@polkadot/util-crypto';
+import { blake2AsU8a, encodeAddress } from '@polkadot/util-crypto';
 import type { Header, Index } from '@polkadot/types/interfaces';
 import { SubmittableExtrinsic } from '@polkadot/api/types';
 import type { SignatureOptions, IExtrinsicEra } from '@polkadot/types/types';
@@ -17,7 +17,11 @@ interface SigningResult {
     nonce: Index;
 }
 
-export type SignTypedData_v4 = [string, GenericExtrinsicPayloadV4, HexString | null];
+export interface SignTypedData_v4 {
+	dotAddress: string;
+	payload: GenericExtrinsicPayloadV4;
+	signature: HexString | null;
+}
 
 function makeEraOptions(api: ApiPromise, registry: Registry, partialOptions: Partial<SignatureOptions>, signingInfo: SigningResult) {
 	const { header, mortalLength, nonce } = signingInfo;
@@ -60,14 +64,15 @@ function makeSignOptions(api: ApiPromise, partialOptions: Partial<SignatureOptio
 	);
   }
   
-  export async function signTypedData_v4(api: ApiPromise, tx: SubmittableExtrinsic<"promise">, ethAddress: string, provider: SDKProvider): Promise<SignTypedData_v4 | undefined> {
-	const dotAddress = blake2AsU8a(hexToU8a(ethAddress)) as unknown as string;
+  export async function signTypedData_v4(api: ApiPromise, tx: SubmittableExtrinsic<"promise">, provider: SDKProvider): Promise<SignTypedData_v4 | undefined> {
+	const ethAddress = provider.selectedAddress;
+	const dotAddress = encodeAddress(blake2AsU8a(hexToU8a(ethAddress)), 42); 
 	const options: Partial<SignatureOptions> = {};  
 
 	const signingInfo = await api.derive.tx.signingInfo(dotAddress, options.nonce, options.era);
 	const eraOptions = makeEraOptions(api, api.registry, options, signingInfo);
-	const tx_payload = tx.inner.signature.createPayload(tx.method as Call, eraOptions);
-	const raw_payload = tx_payload.toU8a({ method: true });
+	const payload = tx.inner.signature.createPayload(tx.method as Call, eraOptions);
+	const raw_payload = payload.toU8a({ method: true });
   
 	const result = await api.rpc.metamask.get_eip712_sign_data(tx.toHex().slice(2));
 	const data = JSON.parse(result.toString());
@@ -79,7 +84,11 @@ function makeSignOptions(api: ApiPromise, partialOptions: Partial<SignatureOptio
 			params: [ethAddress, JSON.stringify(data)],
 		});
 
-	  return [dotAddress, tx_payload, signature || null];
+		return {
+			dotAddress,
+			payload,
+			signature: signature || null
+		}
 	} catch (err) {
 	  console.error(err);
 	}

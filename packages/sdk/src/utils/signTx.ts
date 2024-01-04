@@ -163,7 +163,7 @@ export const signTx = async (
     const extractedAccount =
       typeof account === 'string' ? account : account.address;
 
-    let subscribed = false;
+    const subscribed = false; // TODO: do we need this?
     const nonce = await getTxNonce(api, extractedAccount, txOptions);
 
     logger.debug(
@@ -189,11 +189,6 @@ export const signTx = async (
           );
         });
       } else if (txOptions?.metamaskProvider) {
-        if (!txOptions?.ethAccount) {
-          reject('Ethereum address not provided');
-          return;
-        }
-
         const metamaskTx = api.createType(
           'Extrinsic',
           { method: tx.method },
@@ -202,7 +197,6 @@ export const signTx = async (
         const signRes = await signTypedData_v4(
           api,
           tx,
-          txOptions?.ethAccount,
           txOptions?.metamaskProvider
         );
 
@@ -211,12 +205,12 @@ export const signTx = async (
           return;
         }
 
-        const [addr, payload, signature] = signRes;
+        const { dotAddress, payload, signature } = signRes;
         const created_signature = api.createType('MultiSignature', {
           Eth: hexToU8a(signature),
         });
 
-        metamaskTx.addSignature(addr, created_signature as any, payload as any);
+        metamaskTx.addSignature(dotAddress, created_signature.toHex(), payload.toHex());
 
         const unsub = await api.rpc.author.submitAndWatchExtrinsic(
           metamaskTx,

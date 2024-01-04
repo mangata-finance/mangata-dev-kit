@@ -99,7 +99,6 @@ export type MangataGenericEvent = {
 export type TxOptions = {
   nonce: BN;
   signer: Signer;
-  ethAccount?: string;
   metamaskProvider?: SDKProvider;
   statusCallback: (result: ISubmittableResult) => void;
   extrinsicStatus: (events: MangataGenericEvent[]) => void;
