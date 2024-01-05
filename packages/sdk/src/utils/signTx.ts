@@ -7,6 +7,7 @@ import { BN } from '@polkadot/util';
 
 import {
   Account,
+  ExtrinsicSubscriptionData,
   MangataEventData,
   MangataGenericEvent,
   TxOptions,
@@ -16,33 +17,31 @@ import { dbInstance } from './inMemoryDatabase';
 import { truncatedString } from './truncatedString';
 import { getTxError } from './getTxError';
 import { logger } from './mangataLogger';
-import { ExtrinsicStatus } from '@polkadot/types/interfaces';
 import { hexToU8a } from '@polkadot/util';
 import { signTypedData_v4 } from './metamaskSigning';
 
 const subscribeToExtrinsic = async (
   api: ApiPromise,
   tx: GenericExtrinsic<AnyTuple>,
-  status: ExtrinsicStatus,
+  result: ExtrinsicSubscriptionData,
   extractedAccount: string,
   txOptions: Partial<TxOptions> | undefined,
   subscribed: boolean,
-  result: ISubmittableResult | null,
   resolve: (
     value: MangataGenericEvent[] | PromiseLike<MangataGenericEvent[]>
   ) => void,
   reject: (reason?: any) => void,
   unsub: () => void
 ) => {
+  const { status } = result;
+
   logger.debug(
     `Tx[${tx.hash.toString()}]who: ${extractedAccount} nonce: ${tx.nonce.toString()} => ${
       status.type
     }(${status.value.toString()})`
   );
-
-  if (result) {
-    txOptions?.statusCallback?.(result);
-  }
+  
+  txOptions?.statusCallback?.(result);
 
   if ((status.isInBlock || status.isFinalized) && !subscribed) {
     subscribed = true;
@@ -144,11 +143,6 @@ const subscribeToExtrinsic = async (
         }
       }
     );
-  } else if (result?.isError) {
-    reject(`Tx([${tx.hash.toString()}]) Transaction error`);
-    const nonce = await api.rpc.system.accountNextIndex(extractedAccount);
-    const currentNonce: BN = nonce.toBn();
-    dbInstance.setNonce(extractedAccount, currentNonce);
   }
 };
 
@@ -174,19 +168,25 @@ export const signTx = async (
       if (txOptions?.signer) {
         await tx.signAsync(account, { nonce, signer: txOptions?.signer });
 
-        const unsub = await tx.send(async (result: ISubmittableResult) => {
+        const unsub = await tx.send(async (result) => {
           subscribeToExtrinsic(
             api,
             tx,
-            result.status,
+            result,
             extractedAccount,
             txOptions,
             subscribed,
-            result,
             resolve,
             reject,
             unsub
           );
+          
+          if (result?.isError) {
+            reject(`Tx([${tx.hash.toString()}]) Transaction error`);
+            const nonce = await api.rpc.system.accountNextIndex(extractedAccount);
+            const currentNonce: BN = nonce.toBn();
+            dbInstance.setNonce(extractedAccount, currentNonce);
+          }
         });
       } else if (txOptions?.metamaskProvider) {
         const metamaskTx = api.createType(
@@ -212,17 +212,17 @@ export const signTx = async (
 
         metamaskTx.addSignature(dotAddress, created_signature.toHex(), payload.toHex());
 
+        
         const unsub = await api.rpc.author.submitAndWatchExtrinsic(
           metamaskTx,
           async (status) => {
             subscribeToExtrinsic(
               api,
               metamaskTx,
-              status,
+              { status },
               extractedAccount,
               txOptions,
               subscribed,
-              null,
               resolve,
               reject,
               unsub

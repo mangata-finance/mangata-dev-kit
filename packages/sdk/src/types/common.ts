@@ -3,7 +3,7 @@ import { ApiPromise } from "@polkadot/api";
 import { KeyringPair } from "@polkadot/keyring/types";
 import { Signer } from "@polkadot/api/types";
 import type { ISubmittableResult, Codec } from "@polkadot/types/types";
-import type { Event, Phase } from "@polkadot/types/interfaces";
+import type { Event, Phase, ExtrinsicStatus } from "@polkadot/types/interfaces";
 import { SubmittableExtrinsic } from "@polkadot/api/types";
 import { ILogObj, ISettingsParam } from "tslog";
 import type { SDKProvider } from '@metamask/sdk';
@@ -96,11 +96,16 @@ export type MangataGenericEvent = {
     name: string;
   } | null;
 };
+
+export interface ExtrinsicSubscriptionData extends Partial<ISubmittableResult> {
+  status: ExtrinsicStatus;
+}
+
 export type TxOptions = {
   nonce: BN;
   signer: Signer;
   metamaskProvider?: SDKProvider;
-  statusCallback: (result: ISubmittableResult) => void;
+  statusCallback: (data: ExtrinsicSubscriptionData) => void;
   extrinsicStatus: (events: MangataGenericEvent[]) => void;
 };
 

@@ -59,12 +59,12 @@ function makeSignOptions(api: ApiPromise, partialOptions: Partial<SignatureOptio
 	  {
 		runtimeVersion: api.runtimeVersion,
 		signedExtensions: api.registry.signedExtensions,
-		version: undefined, // TODO: api.extrinsicType was supposed to be here, but there is always undefined
+		version: undefined, 
 	  },
 	);
   }
   
-  export async function signTypedData_v4(api: ApiPromise, tx: SubmittableExtrinsic<"promise">, provider: SDKProvider): Promise<SignTypedData_v4 | undefined> {
+  export async function signTypedData_v4(api: ApiPromise, tx: SubmittableExtrinsic<"promise">, provider: SDKProvider): Promise<SignTypedData_v4> {
 	const ethAddress = provider.selectedAddress;
 	const dotAddress = encodeAddress(blake2AsU8a(hexToU8a(ethAddress)), 42); 
 	const options: Partial<SignatureOptions> = {};  
@@ -78,19 +78,15 @@ function makeSignOptions(api: ApiPromise, partialOptions: Partial<SignatureOptio
 	const data = JSON.parse(result.toString());
 	data.message.tx = u8aToHex(raw_payload).slice(2);
   
-	try {
-		const signature = await provider.request<HexString>({
-			method: 'eth_signTypedData_v4',
-			params: [ethAddress, JSON.stringify(data)],
-		});
+	const signature = await provider.request<HexString>({
+		method: 'eth_signTypedData_v4',
+		params: [ethAddress, JSON.stringify(data)],
+	});
 
-		return {
-			dotAddress,
-			payload,
-			signature: signature || null
-		}
-	} catch (err) {
-	  console.error(err);
+	return {
+		dotAddress,
+		payload,
+		signature: signature || null
 	}
   }
   
